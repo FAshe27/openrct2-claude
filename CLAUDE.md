@@ -18,11 +18,17 @@ for save files.
 
 ## Features
 
-| Feature | Branch | Setting (`config.ini`, `[general]`) | Code |
+| Feature | Branch (merged) | Setting (`config.ini`, `[general]`) | Code |
 |---|---|---|---|
-| Guests spread across both lanes of double-wide paths | `wide-path-lanes` | `guests_spread_across_wide_paths` (default `true`) | `src/openrct2/peep/GuestPathfinding.cpp` ("Wide path lanes" region), tests in `test/tests/WidePathLanes.cpp` |
+| Guests spread across all lanes of wide paths (any width up to 13 tiles), and up to ±7 from a lane's centre line (±6 next to path additions; stock ±3) | `wide-path-lanes` | `guests_spread_across_wide_paths` (default `true`; `false` restores stock behaviour exactly) | `src/openrct2/peep/GuestPathfinding.cpp` ("Wide path lanes" region, `kPathCentreLineClamp*`), tests in `test/tests/WidePathLanes.cpp` |
 
 Keep this table up to date when adding features.
+
+How the wide path lanes work: the regular pathfinding avoids tiles with the wide flag, so it is run from the nearest
+non-wide tile across the path (the "main lane"), and the guest walks in their preferred lane alongside it (chosen
+from their id, counted from the left of their walking direction), moving diagonally one lane per tile.
+`PeepMoveOneTile` can be put in "capture" mode to ask the regular pathfinding which way it would go without moving
+the guest. The owner tests with 10,000+ guests, so keep per-guest work cheap (no allocations per step).
 
 ## Building and testing (Linux cloud session)
 
@@ -72,9 +78,11 @@ python3 -m venv /tmp/cfvenv && /tmp/cfvenv/bin/pip install "clang-format==20.*"
 
 ## Getting a Windows build
 
-Pushing a branch runs GitHub Actions CI (`.github/workflows/ci.yml`), which builds every platform in about 10 minutes.
-The owner downloads the **`OpenRCT2-<version>-Windows-portable-x64`** artifact from the run's page
-(https://github.com/Fashe27/openrct2-claude/actions). Check the run with `gh run list -R Fashe27/openrct2-claude`.
+Pushing a branch runs GitHub Actions CI (`.github/workflows/ci.yml`). It has been cut down for this fork: version
+info, formatting checks, and a single Windows x64 job that builds the portable zip and runs the tests (about 10
+minutes). The owner downloads the **`OpenRCT2-<version>-Windows-portable-x64`** artifact from the run's page
+(https://github.com/Fashe27/openrct2-claude/actions). Check runs with `gh run list -R Fashe27/openrct2-claude`.
 
-The CI "Git describe" step has been changed (on `wide-path-lanes`) to fall back to the version in
-`src/openrct2/Version.h` when there are no tags. Branches without that change fail CI immediately.
+- The "Git describe" step falls back to the version in `src/openrct2/Version.h`, because the repo has no tags.
+- All other upstream workflows (issue/PR management, translations, releases) have been removed.
+- **Ask the owner before pushing changes to CI**, and in general confirm before pushing.
