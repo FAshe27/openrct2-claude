@@ -402,3 +402,163 @@ TEST_F(WidePathLanesTest, GuestsKeepClearOfPathAdditions)
     EXPECT_LE(maxOffsetElsewhere, 7);
     EXPECT_GT(maxOffsetElsewhere, 3) << "Expected guests to spread out further than the stock 3";
 }
+
+/*
+ * Two paths, each two tiles wide, crossing each other: rows y = 9 and y = 10 from x = 1 to x = 10 (leading to the ride
+ * entrance at (1, 11), as above), and columns x = 5 and x = 6 from y = 6 to y = 13.
+ */
+class WidePathCrossingTest : public WidePathLanesTestBase
+{
+public:
+    static void SetUpTestSuite()
+    {
+        LoadPark(kTwoLanes);
+        AddPathTiles(5, 6, 6, 13);
+        for (int32_t i = 0; i < 1000; i++)
+            MapUpdatePathWideFlags();
+    }
+
+    static void TearDownTestSuite()
+    {
+        UnloadPark();
+    }
+
+protected:
+    // Adds path tiles in the given rectangle, connected to each other and to the existing wide path.
+    static void AddPathTiles(int32_t firstX, int32_t lastX, int32_t firstY, int32_t lastY)
+    {
+        const auto* templatePath = MapGetPathElementAt({ 1, 10, kPathZ });
+        auto isOurs = [&](int32_t x, int32_t y) {
+            const bool inRect = x >= firstX && x <= lastX && y >= firstY && y <= lastY;
+            const bool inStrip = x >= kTwoLanes.firstX && x <= kTwoLanes.lastX && y >= kTwoLanes.rows.front()
+                && y <= kTwoLanes.rows.back();
+            return inRect || inStrip;
+        };
+        for (int32_t x = firstX; x <= lastX; x++)
+        {
+            for (int32_t y = firstY; y <= lastY; y++)
+            {
+                if (MapGetPathElementAt({ x, y, kPathZ }) != nullptr)
+                    continue;
+                auto* pathElement = TileElementInsert<PathElement>(TileCoordsXYZ{ x, y, kPathZ }.toCoordsXYZ(), 0b1111);
+                pathElement->setClearanceZ(templatePath->getClearanceZ());
+                if (templatePath->hasLegacyPathEntry())
+                    pathElement->setLegacyPathEntryIndex(templatePath->getLegacyPathEntryIndex());
+                else
+                {
+                    pathElement->setSurfaceEntryIndex(templatePath->getSurfaceEntryIndex());
+                    pathElement->setRailingsEntryIndex(templatePath->getRailingsEntryIndex());
+                }
+                pathElement->setRideIndex(RideId::GetNull());
+                pathElement->setAdditionStatus(255);
+            }
+        }
+        for (int32_t x = firstX; x <= lastX; x++)
+        {
+            for (int32_t y = firstY; y <= lastY; y++)
+            {
+                auto* pathElement = MapGetPathElementAt({ x, y, kPathZ });
+                uint8_t edges = pathElement->getEdges();
+                for (Direction d : kAllDirections)
+                {
+                    const auto n = TileCoordsXY{ x, y } + TileDirectionDelta[d];
+                    if (isOurs(n.x, n.y))
+                    {
+                        edges |= (1 << d);
+                        auto* other = MapGetPathElementAt({ n.x, n.y, kPathZ });
+                        other->setEdges(other->getEdges() | (1 << DirectionReverse(d)));
+                    }
+                }
+                pathElement->setEdges(edges);
+            }
+        }
+    }
+
+    struct WalkResult
+    {
+        int32_t arrived{};
+        int32_t gaveUp{};
+        int32_t lostThoughts{};
+        int32_t totalTiles{};
+    };
+
+    static WalkResult WalkFrom(const TileCoordsXYZ& start, Direction heading, int32_t numGuests)
+    {
+        WalkResult result{};
+        auto* ride = FindRideByName("PathWithGap");
+        std::vector<Guest*> guests;
+        for (int32_t i = 0; i < numGuests; i++)
+            guests.push_back(Guest::generate(start.toCoordsXYZ().toTileCentre()));
+
+        for (auto* guest : guests)
+        {
+            guest->outsideOfPark = false;
+            guest->state = PeepState::walking;
+            guest->guestHeadingToRideId = ride->id;
+            guest->guestIsLostCountdown = 200;
+            guest->peepDirection = heading;
+            guest->nextLoc = start.toCoordsXYZ();
+            guest->setNextFlags(0, false, false);
+            guest->setDestination(CoordsXY{ guest->getLocation() } + CoordsDirectionDelta[heading], 2);
+
+            TileCoordsXY lastTile{ start };
+            for (int32_t step = 0; step < 8000; step++)
+            {
+                guest->performNextAction();
+                const auto tile = TileCoordsXY{ TileCoordsXYZ{ guest->nextLoc } };
+                if (tile != lastTile)
+                {
+                    lastTile = tile;
+                    result.totalTiles++;
+                }
+                if (tile.x == kTwoLanes.firstX && tile.y == kTwoLanes.rows.back())
+                {
+                    result.arrived++;
+                    break;
+                }
+                if (guest->guestHeadingToRideId.IsNull())
+                {
+                    result.gaveUp++;
+                    break;
+                }
+            }
+            if (guest->guestIsLostCountdown < 200)
+                result.lostThoughts++;
+        }
+        for (auto* guest : guests)
+            PeepEntityRemove(guest);
+        return result;
+    }
+};
+
+TEST_F(WidePathCrossingTest, GuestsFindTheirWayThroughTheCrossing)
+{
+    struct Start
+    {
+        const char* name;
+        TileCoordsXYZ loc;
+        Direction heading;
+    };
+    const Start starts[] = {
+        { "east", { 10, 9, kPathZ }, 0 }, { "east", { 10, 10, kPathZ }, 0 }, { "north", { 5, 6, kPathZ }, 1 },
+        { "north", { 6, 6, kPathZ }, 1 }, { "south", { 5, 13, kPathZ }, 3 }, { "south", { 6, 13, kPathZ }, 3 },
+    };
+    for (const auto& start : starts)
+    {
+        for (const bool enabled : { false, true })
+        {
+            Config::Get().general.guestsSpreadAcrossWidePaths = enabled;
+            ScenarioRandSeed(0x12345678, 0x87654321);
+            const auto result = WalkFrom(start.loc, start.heading, 10);
+            std::printf(
+                "%s %d,%d %s: arrived %d, gave up %d, counted as lost %d, tiles walked %d\n", start.name, start.loc.x,
+                start.loc.y, enabled ? "enabled " : "disabled", result.arrived, result.gaveUp, result.lostThoughts,
+                result.totalTiles);
+            if (enabled)
+            {
+                EXPECT_EQ(result.arrived, 10);
+                EXPECT_EQ(result.lostThoughts, 0);
+            }
+        }
+    }
+}

@@ -225,6 +225,7 @@ namespace OpenRCT2::PathFinding
     // lane logic to find out which way the regular pathfinding would go from a given tile.
     static bool _captureMoveDirection = false;
     static Direction _capturedMoveDirection = kInvalidDirection;
+    static bool _capturedDeadEnd = false;
 
     /**
      *
@@ -1966,9 +1967,17 @@ namespace OpenRCT2::PathFinding
         if (!(edges & ~(1 << direction)))
         {
             // In a dead end.  Check if peep is lost, etc.
-            peep.checkIfLost();
-            peep.checkCantFindRide();
-            peep.checkCantFindExit();
+            if (_captureMoveDirection)
+            {
+                // Only asking which way the pathfinding would go; the caller decides whether the guest is really here.
+                _capturedDeadEnd = true;
+            }
+            else
+            {
+                peep.checkIfLost();
+                peep.checkCantFindRide();
+                peep.checkCantFindExit();
+            }
         }
         else
         {
@@ -2246,6 +2255,27 @@ namespace OpenRCT2::PathFinding
         return range;
     }
 
+    /**
+     * Like GetLaneRange, but only counts lanes that also exist on the rows just behind and ahead of loc (where those rows
+     * are paths). Where another path crosses, the crossing path makes a row look much wider than the path the guest is
+     * walking along, so those extra tiles are left out.
+     */
+    static std::pair<int32_t, int32_t> GetCorridorLaneRange(
+        const TileCoordsXY& loc, int32_t baseHeight, Direction forward, Direction right)
+    {
+        auto range = GetLaneRange(loc, baseHeight, right);
+        for (const int32_t rowOffset : { -2, -1, 1, 2 })
+        {
+            const auto row = OffsetTile(loc, forward, rowOffset);
+            if (GetLanePathAt(row, baseHeight) == nullptr)
+                continue;
+            const auto rowRange = GetLaneRange(row, baseHeight, right);
+            range.first = std::max(range.first, rowRange.first);
+            range.second = std::min(range.second, rowRange.second);
+        }
+        return range;
+    }
+
     // Picks one of numLanes lanes for the guest, counted from the left of the direction they are walking in.
     static int32_t GetPreferredLaneIndex(const Guest& guest, int32_t numLanes)
     {
@@ -2287,21 +2317,32 @@ namespace OpenRCT2::PathFinding
     /**
      * Returns the direction the regular pathfinding would choose if the guest were standing at loc, without moving them.
      */
-    static std::optional<Direction> GetDefaultDirectionFrom(Guest& peep, const TileCoordsXYZ& loc)
+    static std::optional<Direction> GetDefaultDirectionFrom(Guest& peep, const TileCoordsXYZ& loc, bool* isDeadEnd = nullptr)
     {
         const auto savedNextLoc = peep.nextLoc;
         peep.nextLoc = loc.toCoordsXYZ();
         _captureMoveDirection = true;
         _capturedMoveDirection = kInvalidDirection;
+        _capturedDeadEnd = false;
 
         const auto result = CalculateNextDestinationDefault(peep);
 
         _captureMoveDirection = false;
         peep.nextLoc = savedNextLoc;
+        if (isDeadEnd != nullptr)
+            *isDeadEnd = _capturedDeadEnd;
 
         if (result != 0 || _capturedMoveDirection == kInvalidDirection)
             return std::nullopt;
         return _capturedMoveDirection;
+    }
+
+    // Runs the checks that the regular pathfinding does when a guest reaches a dead end.
+    static void CheckGuestAtDeadEnd(Guest& peep)
+    {
+        peep.checkIfLost();
+        peep.checkCantFindRide();
+        peep.checkCantFindExit();
     }
 
     /**
@@ -2358,7 +2399,7 @@ namespace OpenRCT2::PathFinding
         const Direction heading = peep.peepDirection;
         const Direction right = (heading + 1) & 3;
         const auto tile = TileCoordsXY{ loc };
-        const auto [left, rightmost] = GetLaneRange(tile, loc.z, right);
+        const auto [left, rightmost] = GetCorridorLaneRange(tile, loc.z, heading, right);
 
         // Non-wide tiles across the path, nearest first.
         std::array<TileCoordsXYZ, 2 * kMaxLaneOffset + 2> candidates;
@@ -2388,14 +2429,19 @@ namespace OpenRCT2::PathFinding
         }
 
         std::optional<std::pair<TileCoordsXYZ, Direction>> fallback;
+        bool fallbackIsDeadEnd = false;
         for (size_t i = 0; i < numCandidates; i++)
         {
             const auto& candidate = candidates[i];
-            const auto direction = GetDefaultDirectionFrom(peep, candidate);
+            bool isDeadEnd = false;
+            const auto direction = GetDefaultDirectionFrom(peep, candidate, &isDeadEnd);
             if (!direction.has_value())
                 continue;
             if (!fallback.has_value())
+            {
                 fallback = { candidate, *direction };
+                fallbackIsDeadEnd = isDeadEnd;
+            }
 
             // Turning around, or moving sideways onto another tile of the same path: try the next lane.
             if (*direction == DirectionReverse(heading))
@@ -2411,6 +2457,10 @@ namespace OpenRCT2::PathFinding
             }
             return std::pair{ candidate, *direction };
         }
+
+        // Every lane turns the guest around here, so the guest really is at a dead end.
+        if (fallbackIsDeadEnd)
+            CheckGuestAtDeadEnd(peep);
         return fallback;
     }
 
@@ -2472,10 +2522,7 @@ namespace OpenRCT2::PathFinding
             return PeepMoveOneTile(towardsMain, peep);
         }
 
-        const auto [hereLeft, hereRight] = GetLaneRange(mainTile, loc.z, right);
-        const auto [aheadLeft, aheadRight] = GetLaneRange(mainAheadTile, loc.z, right);
-        const int32_t laneLeft = std::max(hereLeft, aheadLeft);
-        const int32_t laneRight = std::min(hereRight, aheadRight);
+        const auto [laneLeft, laneRight] = GetCorridorLaneRange(mainTile, loc.z, forward, right);
         const int32_t target = laneLeft + GetPreferredLaneIndex(peep, laneRight - laneLeft + 1);
 
         // Move at most one lane across per tile.
