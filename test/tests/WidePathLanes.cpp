@@ -562,3 +562,34 @@ TEST_F(WidePathCrossingTest, GuestsFindTheirWayThroughTheCrossing)
         }
     }
 }
+
+/*
+ * A corner: the two-lane path along rows y = 9 and y = 10, joined at its east end by a two-lane path along columns
+ * x = 9 and x = 10 from y = 6. Guests come down from the north and turn west towards the ride.
+ */
+class WidePathCornerTest : public WidePathCrossingTest
+{
+public:
+    static void SetUpTestSuite()
+    {
+        LoadPark(kTwoLanes);
+        AddPathTiles(9, 10, 6, 10);
+        for (int32_t i = 0; i < 1000; i++)
+            MapUpdatePathWideFlags();
+    }
+};
+
+TEST_F(WidePathCornerTest, GuestsKeepTheirLaneRoundCorners)
+{
+    Config::Get().general.guestsSpreadAcrossWidePaths = true;
+    for (const int32_t startX : { 9, 10 })
+    {
+        ScenarioRandSeed(0x12345678, 0x87654321);
+        const auto result = WalkFrom({ startX, 6, kPathZ }, 1, 20);
+        std::printf(
+            "from %d,6: arrived %d, gave up %d, counted as lost %d, tiles walked %d\n", startX, result.arrived, result.gaveUp,
+            result.lostThoughts, result.totalTiles);
+        EXPECT_EQ(result.arrived, 20);
+        EXPECT_EQ(result.lostThoughts, 0);
+    }
+}

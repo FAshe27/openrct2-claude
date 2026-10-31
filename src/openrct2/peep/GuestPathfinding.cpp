@@ -2484,11 +2484,26 @@ namespace OpenRCT2::PathFinding
         const int32_t along = toGuest.x * TileDirectionDelta[forward].x + toGuest.y * TileDirectionDelta[forward].y;
         if (along != 0)
         {
-            // The main lane wants to go across the path, towards or past the guest.
+            // The main lane is turning (or crossing the path) towards the guest's side: the guest is on the inside of
+            // the turn, so turn here.
             if (along > 0)
+            {
+                const auto* ahead = GetLanePathAt(tile + TileDirectionDelta[forward], loc.z);
+                if (ahead != nullptr && LanePathsConnected(current, *ahead, forward))
+                    return PeepMoveOneTile(forward, peep);
                 return CalculateNextDestinationDefault(peep);
+            }
 
-            // Crossing over the main lane.
+            // The main lane is turning away from the guest's side. At a corner (where the main lane can't carry on
+            // straight), the guest is on the outside of the turn and carries on to their own corner. Otherwise (a
+            // junction or crossing, or a narrow side path) they cross over the main lane.
+            const Direction heading = peep.peepDirection;
+            const auto* mainElement = GetLanePathAt(mainTile, loc.z);
+            const bool mainLaneIsCorner = mainElement != nullptr
+                && !(PathGetPermittedEdges(false, mainElement) & (1 << heading));
+            if (mainLaneIsCorner && heading != forward && heading != DirectionReverse(forward)
+                && IsLaneBlock(tile, current, heading, forward))
+                return PeepMoveOneTile(heading, peep);
             return PeepMoveOneTile(forward, peep);
         }
 
@@ -2523,6 +2538,22 @@ namespace OpenRCT2::PathFinding
         }
 
         const auto [laneLeft, laneRight] = GetCorridorLaneRange(mainTile, loc.z, forward, right);
+
+        // Look one tile ahead for a corner: when the guest is on the inside of a turn the main lane is about to make,
+        // the guest's own lane turns here, a tile before the main lane does.
+        if (across != 0)
+        {
+            const int32_t outwardOffset = across + (across > 0 ? 1 : -1);
+            const auto* outer = GetLanePathAt(tile + TileDirectionDelta[outward], loc.z);
+            if ((outwardOffset < laneLeft || outwardOffset > laneRight) && outer != nullptr
+                && LanePathsConnected(current, *outer, outward))
+            {
+                const auto nextDirection = GetDefaultDirectionFrom(peep, { mainAheadTile, loc.z });
+                if (nextDirection.has_value() && *nextDirection == outward)
+                    return PeepMoveOneTile(outward, peep);
+            }
+        }
+
         const int32_t target = laneLeft + GetPreferredLaneIndex(peep, laneRight - laneLeft + 1);
 
         // Move at most one lane across per tile.
