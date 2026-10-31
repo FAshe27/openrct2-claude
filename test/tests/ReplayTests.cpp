@@ -16,6 +16,7 @@
 #include <openrct2/GameState.h>
 #include <openrct2/OpenRCT2.h>
 #include <openrct2/ReplayManager.h>
+#include <openrct2/config/Config.h>
 #include <openrct2/core/FileScanner.h>
 #include <openrct2/core/Path.hpp>
 #include <openrct2/core/String.hpp>
@@ -78,6 +79,9 @@ TEST_P(ReplayTests, RunReplay)
     auto context = CreateContext();
     bool initialised = context->Initialise();
     ASSERT_TRUE(initialised);
+
+    // The replays were recorded with the original guest behaviour on wide paths.
+    Config::Get().general.guestsSpreadAcrossWidePaths = false;
 
     IReplayManager* replayManager = context->GetReplayManager();
     ASSERT_NE(replayManager, nullptr);
