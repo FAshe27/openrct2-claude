@@ -29,13 +29,34 @@
 using namespace OpenRCT2;
 
 /*
- * Builds a path that is two tiles wide (rows y = 9 and y = 10, from x = 1 to x = 10) in the pathfinding test park, leading
- * to the entrance of the "PathWithGap" ride at (1, 11), and walks guests along it from the far end.
+ * Builds paths that are several tiles wide in the pathfinding test park, leading to the entrance of the "PathWithGap" ride
+ * at (1, 11), and walks guests along them from the far end.
  */
-class WidePathLanesTest : public testing::Test
+struct WidePathLayout
+{
+    std::vector<int32_t> rows; // From north to south; the last row leads to the ride entrance.
+    int32_t firstX;
+    int32_t lastX;
+};
+
+class WidePathLanesTestBase : public testing::Test
 {
 public:
-    static void SetUpTestSuite()
+    void SetUp() override
+    {
+        ScenarioRandSeed(0x12345678, 0x87654321);
+    }
+
+protected:
+    static constexpr int32_t kPathZ = 14;
+
+    struct LaneCounts
+    {
+        std::vector<int32_t> tilesPerRow;
+        int32_t guestsArrived{};
+    };
+
+    static void LoadPark(const WidePathLayout& layout)
     {
         gOpenRCT2Headless = true;
         gOpenRCT2NoGraphics = true;
@@ -45,40 +66,23 @@ public:
         GetContext()->LoadParkFromFile(TestData::GetParkPath("pathfinding-tests.sv6"));
         GameLoadInit();
 
-        BuildWidePath();
+        BuildWidePath(layout);
     }
 
-    static void TearDownTestSuite()
+    static void UnloadPark()
     {
         Config::Get().general.guestsSpreadAcrossWidePaths = true;
         _context = nullptr;
     }
 
-    void SetUp() override
-    {
-        ScenarioRandSeed(0x12345678, 0x87654321);
-    }
-
-protected:
-    static constexpr int32_t kPathZ = 14;
-    static constexpr int32_t kFirstX = 1;
-    static constexpr int32_t kLastX = 10;
-    static constexpr std::array<int32_t, 2> kLaneRows = { 9, 10 };
-
-    struct LaneCounts
-    {
-        int32_t tilesPerRow[2]{};
-        int32_t guestsArrived{};
-    };
-
-    static void BuildWidePath()
+    static void BuildWidePath(const WidePathLayout& layout)
     {
         const auto* templatePath = MapGetPathElementAt({ 1, 10, kPathZ });
         ASSERT_NE(templatePath, nullptr);
 
-        for (int32_t x = kFirstX; x <= kLastX; x++)
+        for (int32_t x = layout.firstX; x <= layout.lastX; x++)
         {
-            for (auto y : kLaneRows)
+            for (auto y : layout.rows)
             {
                 if (MapGetPathElementAt({ x, y, kPathZ }) != nullptr)
                     continue;
@@ -101,19 +105,19 @@ protected:
         }
 
         // Connect every tile of the strip to its neighbours within the strip.
-        for (int32_t x = kFirstX; x <= kLastX; x++)
+        for (int32_t x = layout.firstX; x <= layout.lastX; x++)
         {
-            for (auto y : kLaneRows)
+            for (auto y : layout.rows)
             {
                 auto* pathElement = MapGetPathElementAt({ x, y, kPathZ });
                 uint8_t edges = pathElement->getEdges();
-                if (x > kFirstX)
+                if (x > layout.firstX)
                     edges |= (1 << 0);
-                if (x < kLastX)
+                if (x < layout.lastX)
                     edges |= (1 << 2);
-                if (y == kLaneRows[0])
+                if (y != layout.rows.back())
                     edges |= (1 << 1);
-                else
+                if (y != layout.rows.front())
                     edges |= (1 << 3);
                 pathElement->setEdges(edges);
             }
@@ -124,8 +128,8 @@ protected:
             MapUpdatePathWideFlags();
 
         int32_t wideTiles = 0;
-        for (int32_t x = kFirstX; x <= kLastX; x++)
-            for (auto y : kLaneRows)
+        for (int32_t x = layout.firstX; x <= layout.lastX; x++)
+            for (auto y : layout.rows)
                 wideTiles += MapGetPathElementAt({ x, y, kPathZ })->isWide() ? 1 : 0;
         ASSERT_GT(wideTiles, 0) << "Test layout should contain wide path tiles";
     }
@@ -140,26 +144,24 @@ protected:
         return nullptr;
     }
 
-    static LaneCounts WalkGuests(int32_t numGuests, int32_t startRow)
+    static LaneCounts WalkGuests(const WidePathLayout& layout, int32_t numGuests, size_t startRow)
     {
         LaneCounts counts{};
+        counts.tilesPerRow.resize(layout.rows.size());
         auto* ride = FindRideByName("PathWithGap");
         EXPECT_NE(ride, nullptr);
         if (ride == nullptr)
             return counts;
 
+        const TileCoordsXYZ start{ layout.lastX, layout.rows[startRow], kPathZ };
+
         // Create all guests up front, so they all have different ids.
         std::vector<Guest*> guests;
         for (int32_t i = 0; i < numGuests; i++)
-        {
-            const TileCoordsXYZ start{ kLastX, kLaneRows[startRow], kPathZ };
             guests.push_back(Guest::generate(start.toCoordsXYZ().toTileCentre()));
-        }
 
-        for (int32_t i = 0; i < numGuests; i++)
+        for (auto* guest : guests)
         {
-            const TileCoordsXYZ start{ kLastX, kLaneRows[startRow], kPathZ };
-            auto* guest = guests[i];
             guest->outsideOfPark = false;
             guest->state = PeepState::walking;
             guest->guestHeadingToRideId = ride->id;
@@ -178,14 +180,14 @@ protected:
                 if (tile != lastTile)
                 {
                     lastTile = tile;
-                    if (tile.x > kFirstX && tile.x < kLastX)
+                    if (tile.x > layout.firstX && tile.x < layout.lastX)
                     {
-                        counts.tilesPerRow[0] += (tile.y == kLaneRows[0]) ? 1 : 0;
-                        counts.tilesPerRow[1] += (tile.y == kLaneRows[1]) ? 1 : 0;
+                        for (size_t row = 0; row < layout.rows.size(); row++)
+                            counts.tilesPerRow[row] += (tile.y == layout.rows[row]) ? 1 : 0;
                     }
                 }
 
-                if (tile.x == kFirstX && tile.y == kLaneRows[1])
+                if (tile.x == layout.firstX && tile.y == layout.rows.back())
                 {
                     counts.guestsArrived++;
                     break;
@@ -197,44 +199,78 @@ protected:
         return counts;
     }
 
+    static void PrintCounts(const char* name, const WidePathLayout& layout, const LaneCounts& counts)
+    {
+        std::printf("%s:", name);
+        for (size_t row = 0; row < layout.rows.size(); row++)
+            std::printf(" row %d = %d tiles", layout.rows[row], counts.tilesPerRow[row]);
+        std::printf("\n");
+    }
+
+    static void ExpectEveryLaneUsed(const LaneCounts& counts)
+    {
+        int32_t total = 0;
+        for (auto n : counts.tilesPerRow)
+            total += n;
+        const int32_t minimumPercent = 60 / static_cast<int32_t>(counts.tilesPerRow.size());
+        for (auto n : counts.tilesPerRow)
+            EXPECT_GT(n * 100, total * minimumPercent) << "Expected guests to use every lane";
+    }
+
 private:
     static std::shared_ptr<IContext> _context;
 };
 
-std::shared_ptr<IContext> WidePathLanesTest::_context;
+std::shared_ptr<IContext> WidePathLanesTestBase::_context;
+
+// Two lanes: rows y = 9 and y = 10, from x = 1 to x = 10.
+static const WidePathLayout kTwoLanes = { { 9, 10 }, 1, 10 };
+
+class WidePathLanesTest : public WidePathLanesTestBase
+{
+public:
+    static void SetUpTestSuite()
+    {
+        LoadPark(kTwoLanes);
+    }
+
+    static void TearDownTestSuite()
+    {
+        UnloadPark();
+    }
+};
 
 TEST_F(WidePathLanesTest, GuestsUseOneLaneWhenDisabled)
 {
     Config::Get().general.guestsSpreadAcrossWidePaths = false;
-    const auto counts = WalkGuests(20, 1);
+    const auto counts = WalkGuests(kTwoLanes, 20, 1);
+    PrintCounts("Disabled", kTwoLanes, counts);
 
     EXPECT_EQ(counts.guestsArrived, 20);
     const auto total = counts.tilesPerRow[0] + counts.tilesPerRow[1];
     const auto busiest = std::max(counts.tilesPerRow[0], counts.tilesPerRow[1]);
-    std::printf("Disabled: row 9 = %d tiles, row 10 = %d tiles\n", counts.tilesPerRow[0], counts.tilesPerRow[1]);
     EXPECT_GT(busiest * 10, total * 8) << "Expected nearly all guests to use the same lane";
 }
 
 TEST_F(WidePathLanesTest, GuestsSpreadAcrossBothLanesWhenEnabled)
 {
     Config::Get().general.guestsSpreadAcrossWidePaths = true;
-    const auto counts = WalkGuests(20, 1);
+    const auto counts = WalkGuests(kTwoLanes, 20, 1);
+    PrintCounts("Enabled", kTwoLanes, counts);
 
     EXPECT_EQ(counts.guestsArrived, 20);
-    const auto total = counts.tilesPerRow[0] + counts.tilesPerRow[1];
-    std::printf("Enabled: row 9 = %d tiles, row 10 = %d tiles\n", counts.tilesPerRow[0], counts.tilesPerRow[1]);
-    EXPECT_GT(counts.tilesPerRow[0] * 10, total * 3) << "Expected guests to use both lanes";
-    EXPECT_GT(counts.tilesPerRow[1] * 10, total * 3) << "Expected guests to use both lanes";
+    ExpectEveryLaneUsed(counts);
 }
 
 TEST_F(WidePathLanesTest, AimlessGuestsStayOnPath)
 {
     Config::Get().general.guestsSpreadAcrossWidePaths = true;
+    const auto& layout = kTwoLanes;
 
     std::vector<Guest*> guests;
     for (int32_t i = 0; i < 20; i++)
     {
-        const TileCoordsXYZ start{ kFirstX + (i % (kLastX - kFirstX + 1)), kLaneRows[i % 2], kPathZ };
+        const TileCoordsXYZ start{ layout.firstX + (i % (layout.lastX - layout.firstX + 1)), layout.rows[i % 2], kPathZ };
         auto* guest = Guest::generate(start.toCoordsXYZ().toTileCentre());
         guest->outsideOfPark = false;
         guest->state = PeepState::walking;
@@ -269,4 +305,31 @@ TEST_F(WidePathLanesTest, AimlessGuestsStayOnPath)
 
     // Guests should keep walking around rather than getting stuck.
     EXPECT_GT(tilesEntered, 20 * 50);
+}
+
+// Three lanes: rows y = 8, 9 and 10, from x = 1 to x = 7.
+static const WidePathLayout kThreeLanes = { { 8, 9, 10 }, 1, 7 };
+
+class WidePathThreeLanesTest : public WidePathLanesTestBase
+{
+public:
+    static void SetUpTestSuite()
+    {
+        LoadPark(kThreeLanes);
+    }
+
+    static void TearDownTestSuite()
+    {
+        UnloadPark();
+    }
+};
+
+TEST_F(WidePathThreeLanesTest, GuestsSpreadAcrossAllLanesWhenEnabled)
+{
+    Config::Get().general.guestsSpreadAcrossWidePaths = true;
+    const auto counts = WalkGuests(kThreeLanes, 30, 2);
+    PrintCounts("Enabled, three lanes", kThreeLanes, counts);
+
+    EXPECT_EQ(counts.guestsArrived, 30);
+    ExpectEveryLaneUsed(counts);
 }
