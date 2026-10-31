@@ -1,0 +1,67 @@
+/*****************************************************************************
+ * Copyright (c) 2014-2026 OpenRCT2 developers
+ *
+ * For a complete list of all authors, please refer to contributors.md
+ * Interested in contributing? Visit https://github.com/OpenRCT2/OpenRCT2
+ *
+ * OpenRCT2 is licensed under the GNU General Public License version 3.
+ *****************************************************************************/
+
+#pragma once
+
+#include <cstdint>
+#include <memory>
+#include <string>
+#include <vector>
+
+namespace OpenRCT2
+{
+    struct IStream;
+
+    /**
+     * A wrapper for an object held in a file or as a file within a zip
+     * archive.
+     *
+     * If only a `path` is provided, GetStream() and GetData() will return the
+     * content of the file directly. If a `zipPath` and `path` are provided,
+     * GetStream() and GetData() will return the content of the file at `path`
+     * within the zip archive at `zipPath`.
+     */
+    class ObjectAsset
+    {
+    private:
+        std::string _zipPath;
+        std::string _path;
+
+    public:
+        ObjectAsset() = default;
+        ObjectAsset(std::string_view path)
+            : _path(path)
+        {
+        }
+        ObjectAsset(std::string_view zipPath, std::string_view path)
+            : _zipPath(zipPath)
+            , _path(path)
+        {
+        }
+
+        [[nodiscard]] bool IsAvailable() const;
+        [[nodiscard]] uint64_t GetSize() const;
+        [[nodiscard]] std::vector<uint8_t> GetData() const;
+        [[nodiscard]] std::unique_ptr<IStream> GetStream() const;
+        const std::string& GetZipPath() const;
+        const std::string& GetPath() const;
+        size_t GetHash() const;
+
+        friend bool operator==(const ObjectAsset& l, const ObjectAsset& r);
+    };
+} // namespace OpenRCT2
+
+template<>
+struct std::hash<OpenRCT2::ObjectAsset>
+{
+    std::size_t operator()(const OpenRCT2::ObjectAsset& asset) const noexcept
+    {
+        return asset.GetHash();
+    }
+};
