@@ -194,13 +194,31 @@ namespace OpenRCT2::PathFinding
     }
 
     // How far guests may walk from the centre line of a path (across their walking direction). Stock OpenRCT2 uses 3;
-    // with guests spreading out across wide paths, they also spread out more within their lane.
+    // with guests spreading out across wide paths, they also spread out more within their lane, except next to path
+    // additions (benches, bins, lamps, ...), where they would walk through them.
     static constexpr int32_t kPathCentreLineClamp = 7;
+    static constexpr int32_t kPathCentreLineClampNearAddition = 6;
     static constexpr int32_t kPathCentreLineClampStock = 3;
 
-    static int32_t GetPathCentreLineClamp()
+    static bool TileHasPathAddition(const CoordsXY& loc, int32_t z)
     {
-        return Config::Get().general.guestsSpreadAcrossWidePaths ? kPathCentreLineClamp : kPathCentreLineClampStock;
+        for (const auto* pathElement : TileElementsView<PathElement>(loc))
+        {
+            if (!pathElement->isGhost() && pathElement->hasAddition()
+                && std::abs(pathElement->getBaseZ() - z) <= kPathHeightStep * 2)
+                return true;
+        }
+        return false;
+    }
+
+    // Returns the clamp for a guest walking from their current tile to the tile at destination.
+    static int32_t GetPathCentreLineClamp(const Peep& peep, const CoordsXY& destination)
+    {
+        if (!Config::Get().general.guestsSpreadAcrossWidePaths)
+            return kPathCentreLineClampStock;
+        if (TileHasPathAddition(peep.nextLoc, peep.nextLoc.z) || TileHasPathAddition(destination, peep.nextLoc.z))
+            return kPathCentreLineClampNearAddition;
+        return kPathCentreLineClamp;
     }
 
     // When set, PeepMoveOneTile only records the direction instead of moving the peep. This is used by the wide path
@@ -250,7 +268,7 @@ namespace OpenRCT2::PathFinding
             // the edges of the path, while allowing guests who are already in an acceptable position to stay there.
 
             const int8_t offset = (ScenarioRand() & 7) - 3;
-            const int32_t clamp = GetPathCentreLineClamp();
+            const int32_t clamp = GetPathCentreLineClamp(peep, newTile);
             if (direction == 0 || direction == 2)
             {
                 // Peep is moving along X, so apply the offset to the X position of the destination and clamp their current Y
@@ -2249,7 +2267,8 @@ namespace OpenRCT2::PathFinding
         // A random offset in the walking direction, like PeepMoveOneTile. As the guest is changing lanes anyway, also
         // pick a new random offset from the centre line of the new lane.
         const int8_t offset = (ScenarioRand() & 7) - 3;
-        const int32_t sideOffset = static_cast<int32_t>(ScenarioRandMax(2 * kPathCentreLineClamp + 1)) - kPathCentreLineClamp;
+        const int32_t clamp = GetPathCentreLineClamp(peep, newTile);
+        const int32_t sideOffset = static_cast<int32_t>(ScenarioRandMax(2 * clamp + 1)) - clamp;
         if (forward == 0 || forward == 2)
         {
             newTile.x += offset;

@@ -333,3 +333,72 @@ TEST_F(WidePathThreeLanesTest, GuestsSpreadAcrossAllLanesWhenEnabled)
     EXPECT_EQ(counts.guestsArrived, 30);
     ExpectEveryLaneUsed(counts);
 }
+
+TEST_F(WidePathLanesTest, GuestsKeepClearOfPathAdditions)
+{
+    Config::Get().general.guestsSpreadAcrossWidePaths = true;
+    const auto& layout = kTwoLanes;
+
+    // Put path additions (e.g. benches) on part of the path.
+    constexpr int32_t kFirstAdditionX = 4;
+    constexpr int32_t kLastAdditionX = 6;
+    for (int32_t x = kFirstAdditionX; x <= kLastAdditionX; x++)
+        for (auto y : layout.rows)
+            MapGetPathElementAt({ x, y, kPathZ })->setAddition(1);
+
+    auto* ride = FindRideByName("PathWithGap");
+    ASSERT_NE(ride, nullptr);
+
+    std::vector<Guest*> guests;
+    for (int32_t i = 0; i < 40; i++)
+    {
+        const TileCoordsXYZ start{ layout.lastX, layout.rows[i % 2], kPathZ };
+        guests.push_back(Guest::generate(start.toCoordsXYZ().toTileCentre()));
+    }
+
+    int32_t maxOffsetNearAdditions = 0;
+    int32_t maxOffsetElsewhere = 0;
+    for (auto* guest : guests)
+    {
+        guest->outsideOfPark = false;
+        guest->state = PeepState::walking;
+        guest->guestHeadingToRideId = ride->id;
+        guest->peepDirection = 0;
+        guest->setDestination(CoordsXY{ guest->getLocation() } + CoordsDirectionDelta[0], 2);
+
+        for (int32_t step = 0; step < 5000; step++)
+        {
+            guest->performNextAction();
+
+            // Where the guest is heading within the next tile, across their walking direction (the value that is
+            // clamped), for guests walking straight along a lane.
+            const auto tile = TileCoordsXY{ TileCoordsXYZ{ guest->nextLoc } };
+            const auto destination = guest->getDestination();
+            const auto destinationTile = TileCoordsXY{ destination };
+            if (tile.y == destinationTile.y && destinationTile.x > layout.firstX && destinationTile.x < layout.lastX)
+            {
+                const int32_t offset = std::abs((destination.y & 31) - 16);
+                const bool nearAddition = (tile.x >= kFirstAdditionX && tile.x <= kLastAdditionX)
+                    || (destinationTile.x >= kFirstAdditionX && destinationTile.x <= kLastAdditionX);
+                if (nearAddition)
+                    maxOffsetNearAdditions = std::max(maxOffsetNearAdditions, offset);
+                else
+                    maxOffsetElsewhere = std::max(maxOffsetElsewhere, offset);
+            }
+
+            if (tile.x == layout.firstX && tile.y == layout.rows.back())
+                break;
+        }
+    }
+    for (auto* guest : guests)
+        PeepEntityRemove(guest);
+    for (int32_t x = kFirstAdditionX; x <= kLastAdditionX; x++)
+        for (auto y : layout.rows)
+            MapGetPathElementAt({ x, y, kPathZ })->setAddition(0);
+
+    std::printf(
+        "Furthest from the centre line: %d next to path additions, %d elsewhere\n", maxOffsetNearAdditions, maxOffsetElsewhere);
+    EXPECT_LE(maxOffsetNearAdditions, 6);
+    EXPECT_LE(maxOffsetElsewhere, 7);
+    EXPECT_GT(maxOffsetElsewhere, 3) << "Expected guests to spread out further than the stock 3";
+}
